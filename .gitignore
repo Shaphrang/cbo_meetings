@@ -1,0 +1,32 @@
+# Flutter
+.dart_tool/
+.packages
+build/
+pubspec.lock
+
+# Android
+android/.gradle/
+android/app/build/
+android/local.properties
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+
+# System
+*.log
+*.tmp
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Firebase (optional but recommended)
+google-services.json
+GoogleService-Info.plist
+
+# Env
+.env
