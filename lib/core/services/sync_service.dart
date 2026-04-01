@@ -1,7 +1,7 @@
 //lib\core\services\sync_service.dart
 import 'dart:io';
 import 'package:supabase_flutter/supabase_flutter.dart';
-
+import 'package:flutter/foundation.dart';
 import 'offline_meeting_service.dart';
 import 'storage_service.dart';
 
@@ -24,7 +24,7 @@ class SyncService {
         final file = File(data["photo_path"]);
 
         if (await file.exists()) {
-          print("📸 Uploading image...");
+          debugPrint("📸 Uploading image...");
 
           final imageUrl = await storage.uploadImage(file);
           data["photo_url"] = imageUrl;
@@ -35,16 +35,22 @@ class SyncService {
       data.remove("uploaded"); // ✅ add here too
       data.removeWhere((key, value) => value == null);
 
+      // ADD THIS BEFORE INSERT
+
+      if (data["district_id"] == null || data["block_id"] == null) {
+        throw Exception("Missing district_id or block_id");
+      }
+
       /// 📡 Insert to Supabase
       final response = await supabase
           .from('meetings')
           .insert(data)
           .select();
 
-      print("✅ Single meeting uploaded: $response");
+      debugPrint("✅ Single meeting uploaded: $response");
 
     } catch (e) {
-      print("❌ Upload failed → saving offline: $e");
+      debugPrint("❌ Upload failed → saving offline: $e");
 
       await offline.saveOffline(meeting);
       rethrow;
@@ -59,7 +65,7 @@ class SyncService {
     final meeting = await offline.getPendingMeeting();
 
     if (meeting == null) {
-      print("📦 No pending meeting");
+      debugPrint("📦 No pending meeting");
 
       return {
         "total": 0,
@@ -69,7 +75,7 @@ class SyncService {
     }
 
     try {
-      print("⬆️ Uploading meeting...");
+      debugPrint("⬆️ Uploading meeting...");
 
       final data = Map<String, dynamic>.from(meeting);
 
@@ -93,7 +99,7 @@ class SyncService {
           .insert(data)
           .select();
 
-      print("✅ Upload success: $response");
+      debugPrint("✅ Upload success: $response");
 
       await offline.markUploaded();
 
@@ -105,7 +111,7 @@ class SyncService {
 
     } catch (e) {
 
-      print("❌ Upload failed: $e");
+      debugPrint("❌ Upload failed: $e");
 
       return {
         "total": 1,

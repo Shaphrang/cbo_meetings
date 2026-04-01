@@ -1,5 +1,6 @@
 //lib\core\services\location_service.dart
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter/foundation.dart';
 
 class LocationService {
 
@@ -31,7 +32,7 @@ class LocationService {
       }
 
     } catch (e) {
-      print("Location error: $e");
+      debugPrint("Location error: $e");
     }
 
     return {

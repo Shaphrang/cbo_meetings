@@ -10,41 +10,38 @@ import 'core/services/fcm_service.dart';
 import 'features/meeting/screens/splash_screen.dart';
 import 'features/notifications/screens/notification_detail_page.dart';
 
-/// 🔔 Background handler
+/// 🔔 BACKGROUND HANDLER
 Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
-  debugPrint("Background notification received");
 }
 
-/// 🔑 Global navigator key
+/// 🔑 NAVIGATOR
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-/// 🔄 Notification stream (used across app)
+/// 🔄 NOTIFICATION STREAM
 final StreamController<RemoteMessage> notificationStream =
     StreamController<RemoteMessage>.broadcast();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  try {
-    /// 🔥 Firebase
-    await Firebase.initializeApp();
-    FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+  /// 🔥 FIREBASE
+  await Firebase.initializeApp();
 
-    /// 🔥 Hive
-    await Hive.initFlutter();
-    await Hive.openBox('offline_meetings');
-    await Hive.openBox('session_box');
+  /// 🔥 BACKGROUND HANDLER
+  FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
 
-    /// 🔥 Supabase
-    await Supabase.initialize(
-      url: 'https://bygfityympgtscogjjgd.supabase.co',
-      anonKey:
-          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ5Z2ZpdHl5bXBndHNjb2dqamdkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI1MjgxODksImV4cCI6MjA4ODEwNDE4OX0.9wSX4Dbs2Jcni3OQvW2yMQJke-Bl0LyJvn3ERKspBBk',
-    );
-  } catch (e) {
-    debugPrint("Startup error: $e");
-  }
+  /// 🔥 HIVE
+  await Hive.initFlutter();
+  await Hive.openBox('offline_meetings');
+  await Hive.openBox('session_box');
+
+  /// 🔥 SUPABASE
+  await Supabase.initialize(
+    url: 'https://bygfityympgtscogjjgd.supabase.co',
+    anonKey:
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ5Z2ZpdHl5bXBndHNjb2dqamdkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI1MjgxODksImV4cCI6MjA4ODEwNDE4OX0.9wSX4Dbs2Jcni3OQvW2yMQJke-Bl0LyJvn3ERKspBBk',
+  );
 
   runApp(const MyApp());
 }
@@ -56,54 +53,66 @@ class MyApp extends StatefulWidget {
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> {
-  late StreamSubscription<RemoteMessage> _notificationSub;
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  StreamSubscription<RemoteMessage>? _sub;
 
   @override
   void initState() {
     super.initState();
 
-    /// 🔥 Init FCM (production safe)
+    WidgetsBinding.instance.addObserver(this);
+
     FCMService.init();
 
-    /// 🔥 Safe navigation listener (after UI ready)
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _notificationSub = notificationStream.stream.listen((message) {
-        _handleNavigation(message);
-      });
+    /// 🔥 HANDLE TERMINATED STATE DIRECTLY
+    FirebaseMessaging.instance.getInitialMessage().then((message) {
+      if (message != null) {
+        Future.delayed(const Duration(milliseconds: 800), () {
+          _handleNavigation(message);
+        });
+      }
     });
+
+    /// 🔥 STREAM LISTENER
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _sub = notificationStream.stream.listen(_handleNavigation);
+    });
+  }
+
+  /// 🔁 RETRY ON RESUME
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      FCMService.retryOnResume();
+    }
   }
 
   @override
   void dispose() {
-    _notificationSub.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _sub?.cancel();
     super.dispose();
   }
 
-  /// 🚀 MAIN NAVIGATION HANDLER
+  /// 🚀 HANDLE NAVIGATION
   void _handleNavigation(RemoteMessage message) {
-    if (!mounted) return;
-
     final data = message.data;
-
-    debugPrint("🔥 NAVIGATION DATA: $data");
 
     final String? screen = data['screen'];
     final String? id = data['id'];
 
     if (screen == 'notification_detail' && id != null) {
-      if (navigatorKey.currentState == null) {
-        debugPrint("❌ Navigator not ready");
-        return;
-      }
+      /// 🔥 DELAY NAVIGATION UNTIL UI READY
+      Future.delayed(const Duration(milliseconds: 500), () {
+        final nav = navigatorKey.currentState;
+        if (nav == null) return;
 
-      navigatorKey.currentState!.push(
-        MaterialPageRoute(
-          builder: (_) => NotificationDetailPage(id: id),
-        ),
-      );
-    } else {
-      debugPrint("⚠️ Unknown notification payload: $data");
+        nav.push(
+          MaterialPageRoute(
+            builder: (_) => NotificationDetailPage(id: id),
+          ),
+        );
+      });
     }
   }
 

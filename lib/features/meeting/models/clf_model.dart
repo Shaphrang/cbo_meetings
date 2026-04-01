@@ -1,14 +1,19 @@
+//lib\features\meeting\models\clf_model.dart
 class CLF {
   final String id;
-  final String district;
-  final String block;
+  final String districtId;
+
+  final String blockId;
+
   final String name;
   final String code;
 
   CLF({
     required this.id,
-    required this.district,
-    required this.block,
+    required this.districtId,
+
+    required this.blockId,
+
     required this.name,
     required this.code,
   });
@@ -16,8 +21,10 @@ class CLF {
   factory CLF.fromMap(Map<String, dynamic> map) {
     return CLF(
       id: map['id'],
-      district: map['district'],
-      block: map['block'],
+      districtId: map['district_id'],
+
+      blockId: map['block_id'],
+
       name: map['clf_name'],
       code: map['clf_code'] ?? '',
     );

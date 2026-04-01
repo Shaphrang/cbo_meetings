@@ -1,6 +1,7 @@
 //lib\features\meeting\screens\meeting_capture_screen.dart
 import 'package:hive/hive.dart';
 import 'dart:io';
+import 'dart:ui';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +10,7 @@ import '../../../core/services/image_service.dart';
 import '../../../core/services/offline_meeting_service.dart';
 import '../../../core/services/sync_service.dart';
 import '../../../features/meeting/screens/camera_screen.dart';
+import '../../notifications/screens/notification_list_page.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'meeting_form_screen.dart';
 
@@ -19,12 +21,16 @@ class MeetingCaptureScreen extends StatefulWidget {
   final String? village;
   final String? voName;
   final String? clfName;
+  final String districtId;
+  final String blockId;
 
   const MeetingCaptureScreen({
     super.key,
     required this.meetingType,
     required this.district,
     required this.block,
+    required this.districtId,   // ✅ NEW
+    required this.blockId,  
     this.village,
     this.voName,
     this.clfName,
@@ -35,6 +41,8 @@ class MeetingCaptureScreen extends StatefulWidget {
 }
 
 class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
+  int pendingSyncCount = 0;
+  final ScrollController _scrollController = ScrollController();
   final phoneController = TextEditingController();
   final membersController = TextEditingController();
   final savingsAmountController = TextEditingController();
@@ -58,11 +66,10 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
   final FocusNode submitFocus = FocusNode(); // for later use
 
   bool isOnline = true;
-  bool meetingHeld = false;
   bool savingsCollected = false;
   bool internalLoan = false;
   bool loanRepayment = false;
-  bool minutesBookkeeping = false;
+  String minutesBookkeeping = "YES"; // default
 
   bool loading = false;
   bool photoLoading = false;
@@ -77,8 +84,53 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
   @override
   void initState() {
     super.initState();
-    
     checkInternet();
+    loadPendingSyncCount(); // ✅ ADD THIS
+  }
+
+  bool validateRequiredFields() {
+    final name = nameController.text.trim();
+    final phone = phoneController.text.trim();
+    final members = membersController.text.trim();
+
+    if (name.isEmpty) {
+      _showError("Member name is required");
+      return false;
+    }
+
+    if (phone.isEmpty || phone.length != 10) {
+      _showError("Enter valid 10-digit mobile number");
+      return false;
+    }
+
+    if (members.isEmpty) {
+      _showError("Members attended is required");
+      return false;
+    }
+
+    return true;
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
+  Future<void> loadPendingSyncCount() async {
+    final offline = OfflineMeetingService();
+    final count = await offline.getPendingCount();
+
+    if (!mounted) return;
+
+    setState(() {
+      pendingSyncCount = count;
+    });
   }
 
   Future<void> checkInternet() async {
@@ -91,7 +143,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
 
   Future<void> capturePhoto() async {
     try {
-      FocusScope.of(context).unfocus(); // ✅ CLOSE KEYBOARD
+      FocusScope.of(context).unfocus();
 
       setState(() => photoLoading = true);
 
@@ -102,13 +154,20 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
         ),
       );
 
+      if (!mounted) return;
+
       if (file == null) {
         setState(() => photoLoading = false);
         return;
       }
 
       final compressed = await imageService.compress(file);
+
+      if (!mounted) return;
+
       final location = await locationService.getLocation();
+
+      if (!mounted) return;
 
       setState(() {
         meetingPhoto = compressed;
@@ -118,18 +177,18 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
         photoLoading = false;
       });
 
-      /// ✅ REMOVE FOCUS AGAIN
+      /// SAFE CONTEXT USAGE
       FocusScope.of(context).unfocus();
 
-      /// ✅ MOVE TO SUBMIT BUTTON
       Future.delayed(const Duration(milliseconds: 200), () {
+        if (!mounted) return;
         FocusScope.of(context).requestFocus(submitFocus);
       });
 
     } catch (e) {
-      setState(() => photoLoading = false);
-
       if (!mounted) return;
+
+      setState(() => photoLoading = false);
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Camera error: $e")),
@@ -150,11 +209,10 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
     selectedRole = "Member";
 
     setState(() {
-      meetingHeld = false;
       savingsCollected = false;
       internalLoan = false;
       loanRepayment = false;
-      minutesBookkeeping = false;
+      minutesBookkeeping = "YES";
 
       meetingPhoto = null;
       latitude = null;
@@ -185,11 +243,15 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
   }
 
   Future<void> saveOfflineOnly() async {
+    if (!validateRequiredFields()) return;
 
     if (meetingPhoto == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please capture meeting photo")),
-      );
+      _showError("Please capture meeting photo");
+      return;
+    }
+
+    if (widget.districtId.isEmpty || widget.blockId.isEmpty) {
+      _showError("Missing district/block ID");
       return;
     }
 
@@ -199,14 +261,17 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
       "meeting_type": widget.meetingType,
       "district": widget.district,
       "block": widget.block,
+
+      "district_id": widget.districtId,
+      "block_id": widget.blockId,
       "village": widget.village,
       "vo_name": widget.voName,
       "clf_name": widget.clfName,
+
       "member_name": nameController.text,
       "member_role": selectedRole,
 
       "mobile_number": phoneController.text,
-      "meeting_held": meetingHeld,
       "members_attended": int.tryParse(membersController.text),
 
       "savings_collected": savingsCollected,
@@ -218,34 +283,42 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
       "internal_loan_repayment": loanRepayment,
       "repayment_amount": double.tryParse(repaymentAmountController.text) ?? 0,
 
-      "minutes_bookeeping_maintained": minutesBookkeeping,
+      "minutes_bookeeping_maintained": minutesBookkeeping == "YES",
+
       "agenda_discussed": agendaController.text,
       "remarks": remarksController.text,
 
       "photo_path": meetingPhoto?.path,
       "latitude": latitude,
       "longitude": longitude,
+
       "created_at": DateTime.now().toIso8601String(),
     };
 
+    /// 🔥 SAVE
     await offline.saveOffline(meeting);
+
+    /// 🔥 UPDATE COUNT (IMPORTANT)
+    await loadPendingSyncCount();
 
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Saved offline successfully")),
-    );
-
-    clearFormFields();
+    /// 🔥 SHOW DIALOG AFTER EVERYTHING IS READY
+    await showSuccessDialog(isOnline: false);
   }
 
   Future<void> submitMeeting() async {
     if (loading) return;
 
+    if (!validateRequiredFields()) return;
+
     if (meetingPhoto == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please capture meeting photo")),
-      );
+      _showError("Please capture meeting photo");
+      return;
+    }
+
+    if (widget.districtId.isEmpty || widget.blockId.isEmpty) {
+      _showError("Missing district/block ID");
       return;
     }
 
@@ -258,15 +331,16 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
       "meeting_type": widget.meetingType,
       "district": widget.district,
       "block": widget.block,
+
+      "district_id": widget.districtId,
+      "block_id": widget.blockId,
       "village": widget.village,
       "vo_name": widget.voName,
       "clf_name": widget.clfName,
 
-      
       "member_name": nameController.text.isEmpty ? null : nameController.text,
       "member_role": selectedRole,
       "mobile_number": phoneController.text.isEmpty ? null : phoneController.text,
-      "meeting_held": meetingHeld,
       "members_attended": int.tryParse(membersController.text),
 
       "savings_collected": savingsCollected,
@@ -278,11 +352,13 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
       "internal_loan_repayment": loanRepayment,
       "repayment_amount": double.tryParse(repaymentAmountController.text) ?? 0,
 
-      "minutes_bookeeping_maintained": minutesBookkeeping,
+      "minutes_bookeeping_maintained": minutesBookkeeping == "YES",
 
-      "agenda_discussed": agendaController.text.isEmpty ? null : agendaController.text,
+      "agenda_discussed":
+          agendaController.text.isEmpty ? null : agendaController.text,
 
-      "remarks": remarksController.text.isEmpty ? null : remarksController.text,
+      "remarks":
+          remarksController.text.isEmpty ? null : remarksController.text,
 
       "photo_path": meetingPhoto?.path,
       "photo_url": null,
@@ -293,36 +369,33 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
     };
 
     try {
+      /// 🔥 TRY ONLINE SUBMISSION
       await sync.syncSingleMeeting(meeting);
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Meeting uploaded successfully")),
-      );
+      await showSuccessDialog(isOnline: true);
 
-      clearFormFields(); // ✅ stay on same screen
-
-    } catch (e) {
-
+    } catch (_) {
+      /// 🔥 FALLBACK → SAVE OFFLINE
       await offline.saveOffline(meeting);
+
+      /// 🔥 UPDATE COUNT (IMPORTANT)
+      await loadPendingSyncCount();
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("No internet. Saved offline"),
-        ),
-      );
+      await showSuccessDialog(isOnline: false);
 
-      clearFormFields(); // ✅ stay on same screen
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted) {
+        setState(() => loading = false);
+      }
     }
   }
 
   Future<void> openDashboard() async {
-  final Uri url = Uri.parse("https://your-dashboard-link.com");
+  final Uri url = Uri.parse("https://msrls-one.vercel.app/admin/institution_tracking/meetings_dashboard");
 
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
       if (!mounted) return;
@@ -350,8 +423,9 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
   }
 
   Future<void> syncNow() async {
-
     final connectivity = await Connectivity().checkConnectivity();
+
+    if (!mounted) return;
 
     if (connectivity == ConnectivityResult.none) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -378,15 +452,233 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text("Uploaded: ${result["uploaded"]}, Failed: ${result["failed"]}"),
+            content: Text(
+              "Uploaded: ${result["uploaded"]}, Failed: ${result["failed"]}",
+            ),
           ),
         );
       }
 
+      await loadPendingSyncCount();
+
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Sync failed. Try again")),
+      );
+
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted) {
+        setState(() => loading = false);
+      }
     }
   }
+    
+  Widget syncBanner() {
+    if (pendingSyncCount == 0) return const SizedBox();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFE0B2), Color(0xFFFFCC80)],
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.orange),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off, color: Colors.deepOrange),
+          const SizedBox(width: 10),
+
+          Expanded(
+            child: Text(
+              pendingSyncCount == 1
+                ? "1 meeting pending sync"
+                : "$pendingSyncCount meetings pending sync",
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+          ),
+
+          InkWell(
+            onTap: () async {
+              await syncNow();
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.deepOrange,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                "SYNC",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+    
+  Future<void> showSuccessDialog({required bool isOnline}) async {
+    final now = DateTime.now();
+
+    final formatted =
+        "${now.day.toString().padLeft(2, '0')}-"
+        "${now.month.toString().padLeft(2, '0')}-"
+        "${now.year}  "
+        "${(now.hour % 12 == 0 ? 12 : now.hour % 12).toString().padLeft(2, '0')}:"
+        "${now.minute.toString().padLeft(2, '0')} "
+        "${now.hour >= 12 ? 'PM' : 'AM'}";
+
+    await showGeneralDialog(
+      context: context,
+      barrierDismissible: false,
+      barrierLabel: "Success",
+      barrierColor: Colors.black.withValues(alpha: 0.6), // 🔥 stronger dark overlay
+      transitionDuration: const Duration(milliseconds: 250),
+
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return Stack(
+          children: [
+
+            /// 🔥 BLUR BACKGROUND
+            BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 4, sigmaY: 4),
+              child: Container(color: Colors.transparent),
+            ),
+
+            /// 🔥 CENTER DIALOG
+            Center(
+              child: Material(
+                color: Colors.transparent,
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 24),
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+
+                      /// ICON
+                      Icon(
+                        isOnline ? Icons.check_circle : Icons.cloud_done,
+                        color: isOnline ? Colors.green : Colors.orange,
+                        size: 50,
+                      ),
+
+                      const SizedBox(height: 14),
+
+                      /// TITLE
+                      Text(
+                        isOnline ? "Meeting Submitted" : "Saved Offline",
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+
+                      const SizedBox(height: 10),
+
+                      /// MESSAGE
+                      Text(
+                        isOnline
+                            ? "Your meeting has been successfully submitted."
+                            : "Meeting saved offline.\nPlease sync within a day.",
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 13),
+                      ),
+
+                      const SizedBox(height: 12),
+
+                      /// DATE TIME
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF4F7FB),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          formatted,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(height: 18),
+
+                      /// BUTTON
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: () {
+                            Navigator.pop(context);
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: primaryBlue,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                          child: const Text(
+                            "THANK YOU",
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+
+      /// 🔥 NICE ANIMATION
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        return FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(
+            scale: CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutBack,
+            ),
+            child: child,
+          ),
+        );
+      },
+    );
+
+    /// 🔥 AFTER CLOSE
+    clearFormFields();
+
+    _scrollController.animateTo(
+      0,
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeOut,
+    );
+  }
+   
     /// SECTION CARD
   Widget modernSectionCard(
     String title,
@@ -400,7 +692,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
         borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(.06),
+            color: Colors.black.withValues(alpha: 0.06),
             blurRadius: 12,
             offset: const Offset(0, 6),
           ),
@@ -434,7 +726,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
                   style: const TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
-                    color: const Color(0xFFFAFBFF), // soft background
+                    color: Color(0xFFFAFBFF), // soft background
                   ),
                 ),
               ],
@@ -639,8 +931,6 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
   super.dispose();
 }
 
-
-
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -722,6 +1012,20 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
                   await syncNow();
                 },
               ),
+              _drawerItem(
+                icon: Icons.notifications_active_outlined,
+                title: "Notifications",
+                color: const Color.fromARGB(255, 66, 248, 11),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const NotificationListPage(),
+                    ),
+                  );
+                },
+              ),
 
               const Spacer(),
 
@@ -729,7 +1033,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: Text(
-                  "MyShillong",
+                  "CBO meeting app: MSRLS",
                   style: TextStyle(
                     fontSize: 11,
                     color: Colors.grey.shade500,
@@ -762,10 +1066,11 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
                 child: GestureDetector(
                   onTap: () => FocusScope.of(context).unfocus(),
                       child: ListView(
+                        controller: _scrollController,
                         physics: const AlwaysScrollableScrollPhysics(), // ✅ REQUIRED
                         keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                         children: [
-
+                        syncBanner(),
                         /// LOCATION CARD
                         modernSectionCard(
                           "CBO Details",
@@ -794,7 +1099,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
 
                             inputField(
                               controller: nameController,
-                              label: "Member Name",
+                              label: "Member Name *",
                             ),
                             const SizedBox(height: 14),
 
@@ -827,7 +1132,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
                             /// PHONE NUMBER
                             inputField(
                               controller: phoneController,
-                              label: "Mobile Number",
+                              label: "Mobile Number *",
                               type: TextInputType.phone,
                               formatters: [
                                 FilteringTextInputFormatter.digitsOnly,
@@ -837,33 +1142,10 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
 
                             const SizedBox(height: 18),
 
-                            /// MEETING HELD SWITCH
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text(
-                                  "Was Meeting Held",
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                Switch(
-                                  value: meetingHeld,
-                                  activeThumbColor: primaryBlue,
-                                  onChanged: (v) {
-                                    setState(() => meetingHeld = v);
-                                  },
-                                )
-                              ],
-                            ),
-
-                            const SizedBox(height: 18),
-
                             /// MEMBERS ATTENDED
                             inputField(
                               controller: membersController,
-                              label: "Members Attended",
+                              label: "Members Attended *",
                               type: TextInputType.number,
                               formatters: [
                                 FilteringTextInputFormatter.digitsOnly,
@@ -888,7 +1170,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
 
                                   /// 🔹 SUB HEADING
                                   const Text(
-                                    "Financial Activity",
+                                    "Financial Activities (Optional)",
                                     style: TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.w600,
@@ -942,24 +1224,149 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
                             ),
                             const SizedBox(height: 12),
                             /// BOOKKEEPING SWITCH
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text(
-                                  "Minutes & Bookkeeping Maintained",
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w500,
+                            Container(
+                              margin: const EdgeInsets.only(top: 10),
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF8FAFF),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: const Color(0xFFD6E4FF)),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+
+                                  /// 🔹 TITLE
+                                  const Text(
+                                    "Minutes & Bookkeeping Maintained ?",
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
-                                ),
-                                Switch(
-                                  value: minutesBookkeeping,
-                                  activeThumbColor: primaryBlue,
-                                  onChanged: (v) {
-                                    setState(() => minutesBookkeeping = v);
-                                  },
-                                )
-                              ],
+
+                                  const SizedBox(height: 12),
+
+                                  /// 🔹 OPTIONS
+                                  Row(
+                                    children: [
+
+                                      /// YES BUTTON
+                                      Expanded(
+                                        child: GestureDetector(
+                                          onTap: () {
+                                            setState(() => minutesBookkeeping = "YES");
+                                          },
+                                          child: AnimatedContainer(
+                                            duration: const Duration(milliseconds: 200),
+                                            padding: const EdgeInsets.symmetric(vertical: 14),
+                                            decoration: BoxDecoration(
+                                              color: minutesBookkeeping == "YES"
+                                                  ? primaryBlue
+                                                  : Colors.white,
+                                              borderRadius: BorderRadius.circular(12),
+                                              border: Border.all(
+                                                color: minutesBookkeeping == "YES"
+                                                    ? primaryBlue
+                                                    : Colors.grey.shade300,
+                                                width: 1.2,
+                                              ),
+                                              boxShadow: minutesBookkeeping == "YES"
+                                                  ? [
+                                                      BoxShadow(
+                                                        color: primaryBlue.withValues(alpha: 0.2),
+                                                        blurRadius: 8,
+                                                        offset: const Offset(0, 3),
+                                                      )
+                                                    ]
+                                                  : [],
+                                            ),
+                                            child: Column(
+                                              children: [
+                                                Icon(
+                                                  Icons.check_circle,
+                                                  size: 20,
+                                                  color: minutesBookkeeping == "YES"
+                                                      ? Colors.white
+                                                      : Colors.grey,
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  "YES",
+                                                  style: TextStyle(
+                                                    color: minutesBookkeeping == "YES"
+                                                        ? Colors.white
+                                                        : Colors.black54,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+
+                                      const SizedBox(width: 12),
+
+                                      /// NO BUTTON
+                                      Expanded(
+                                        child: GestureDetector(
+                                          onTap: () {
+                                            setState(() => minutesBookkeeping = "NO");
+                                          },
+                                          child: AnimatedContainer(
+                                            duration: const Duration(milliseconds: 200),
+                                            padding: const EdgeInsets.symmetric(vertical: 14),
+                                            decoration: BoxDecoration(
+                                              color: minutesBookkeeping == "NO"
+                                                  ? Colors.red
+                                                  : Colors.white,
+                                              borderRadius: BorderRadius.circular(12),
+                                              border: Border.all(
+                                                color: minutesBookkeeping == "NO"
+                                                    ? Colors.red
+                                                    : Colors.grey.shade300,
+                                                width: 1.2,
+                                              ),
+                                              boxShadow: minutesBookkeeping == "NO"
+                                                  ? [
+                                                      BoxShadow(
+                                                        color: Colors.red.withValues(alpha: 0.2),
+                                                        blurRadius: 8,
+                                                        offset: const Offset(0, 3),
+                                                      )
+                                                    ]
+                                                  : [],
+                                            ),
+                                            child: Column(
+                                              children: [
+                                                Icon(
+                                                  Icons.cancel,
+                                                  size: 20,
+                                                  color: minutesBookkeeping == "NO"
+                                                      ? Colors.white
+                                                      : Colors.grey,
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  "NO",
+                                                  style: TextStyle(
+                                                    color: minutesBookkeeping == "NO"
+                                                        ? Colors.white
+                                                        : Colors.black54,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
                             ),
 
                             const SizedBox(height: 18),
@@ -1102,7 +1509,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
                                               shape: BoxShape.circle,
                                               boxShadow: [
                                                 BoxShadow(
-                                                  color: Colors.black.withOpacity(.1),
+                                                  color: Colors.black.withValues(alpha: .1),
                                                   blurRadius: 6,
                                                 )
                                               ],
@@ -1144,7 +1551,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
                                     child: Container(
                                       height: 110,
                                       decoration: BoxDecoration(
-                                        color: Colors.black.withOpacity(.2),
+                                        color: Colors.black.withValues(alpha: .2),
                                         borderRadius: BorderRadius.circular(14),
                                       ),
                                       child: const Center(
@@ -1189,7 +1596,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
                                       child: Container(
                                         padding: const EdgeInsets.all(6),
                                         decoration: BoxDecoration(
-                                          color: Colors.black.withOpacity(0.6),
+                                          color: Colors.black.withValues(alpha: 0.6),
                                           shape: BoxShape.circle,
                                         ),
                                         child: const Icon(
@@ -1336,7 +1743,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
               ),
               if (loading)
                 Container(
-                  color: Colors.black.withOpacity(0.3),
+                  color: Colors.black.withValues(alpha: 0.3),
                   child: const Center(
                     child: CircularProgressIndicator(),
                   ),

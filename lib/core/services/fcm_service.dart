@@ -2,97 +2,141 @@
 import 'dart:async';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
-import '../../main.dart'; // 👈 IMPORTANT (for notificationStream)
+import '../../main.dart';
 
 class FCMService {
   static final FirebaseMessaging _messaging = FirebaseMessaging.instance;
 
-  /// 🔑 Initialize FCM
+  static bool _initialized = false;
+  static Timer? _retryTimer;
+  static DateTime? _lastRetry;
+
+  /// 🔑 INIT (CALL ONCE)
   static Future<void> init() async {
+    if (_initialized) return;
+    _initialized = true;
+
     await _requestPermission();
-    await _setupTokenHandling();
+
+    /// small delay → improves token success rate
+    await Future.delayed(const Duration(seconds: 1));
+
+    await _initToken();
+
     _setupListeners();
   }
 
-  /// 🔔 Request permission
+  /// 🔔 Permission
   static Future<void> _requestPermission() async {
     await _messaging.requestPermission(
       alert: true,
       badge: true,
       sound: true,
     );
+
+    /// 🔥 REQUIRED FOR FOREGROUND NOTIFICATIONS
+    await _messaging.setForegroundNotificationPresentationOptions(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
   }
 
-  /// 🔑 Token + Topic (production safe)
-  static Future<void> _setupTokenHandling() async {
-    String? token;
-    int retry = 0;
-
-    while (token == null && retry < 5) {
-      try {
-        token = await _messaging.getToken();
-        if (token == null) {
-          await Future.delayed(const Duration(seconds: 2));
-        }
-      } catch (e) {
-        debugPrint("Token error: $e");
-      }
-      retry++;
-    }
+  /// 🔑 TOKEN INIT
+  static Future<void> _initToken() async {
+    final token = await _getToken();
 
     if (token != null) {
-      debugPrint("✅ FCM TOKEN: $token");
-      await _safeSubscribeToTopic("meetings_app");
+      _log("FCM Token ready");
+      await _subscribeTopic();
     } else {
-      debugPrint("❌ Failed to get FCM token");
+      _log("Token not available → starting retry");
+      _startRetry();
     }
 
     /// 🔄 Token refresh
-    _messaging.onTokenRefresh.listen((newToken) async {
-      debugPrint("🔄 Token refreshed: $newToken");
-      await _safeSubscribeToTopic("meetings_app");
+    _messaging.onTokenRefresh.listen((_) async {
+      _log("Token refreshed");
+      await _subscribeTopic();
     });
   }
 
-  /// 🔥 Safe topic subscribe (retry)
-  static Future<void> _safeSubscribeToTopic(String topic) async {
-    int retry = 0;
+  /// 🔁 GET TOKEN (stable)
+  static Future<String?> _getToken() async {
+    try {
+      final connectivity = await Connectivity().checkConnectivity();
 
-    while (retry < 5) {
-      try {
-        await _messaging.subscribeToTopic(topic);
-        debugPrint("✅ Subscribed to topic: $topic");
-        return;
-      } catch (e) {
-        retry++;
-        debugPrint("⚠️ Retry subscribe ($retry): $e");
-        await Future.delayed(const Duration(seconds: 2));
+      if (connectivity == ConnectivityResult.none) return null;
+
+      final token = await _messaging.getToken();
+
+      if (token != null && token.isNotEmpty) return token;
+
+    } catch (_) {}
+
+    return null;
+  }
+
+  /// 🔁 RETRY (controlled, no spam)
+  static void _startRetry() {
+    _retryTimer?.cancel();
+
+    _retryTimer = Timer.periodic(const Duration(minutes: 3), (timer) async {
+      final token = await _getToken();
+
+      if (token != null) {
+        _log("Token recovered");
+        await _subscribeTopic();
+        timer.cancel();
       }
+    });
+  }
+
+  /// 🔁 RETRY ON RESUME (rate limited)
+  static void retryOnResume() {
+    final now = DateTime.now();
+
+    if (_lastRetry != null &&
+        now.difference(_lastRetry!) < const Duration(minutes: 2)) {
+      return;
     }
 
-    debugPrint("❌ Failed to subscribe after retries");
+    _lastRetry = now;
+
+    _startRetry();
   }
 
-  /// 🎧 Listeners
+  /// 🔥 TOPIC SUBSCRIBE
+  static Future<void> _subscribeTopic() async {
+    try {
+      await _messaging.subscribeToTopic("meetings_app");
+      _log("Subscribed to topic");
+    } catch (_) {
+      _log("Topic subscription failed");
+    }
+  }
+
+  /// 🎧 LISTENERS
   static void _setupListeners() {
-    /// 🟢 Foreground
+    /// FOREGROUND
     FirebaseMessaging.onMessage.listen((message) {
-      debugPrint("📩 Foreground message received");
+      _log("Foreground message");
     });
 
-    /// 🟡 Background click
+    /// BACKGROUND TAP
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
-      debugPrint("📲 Notification opened (background)");
       notificationStream.add(message);
     });
 
-    /// 🔴 Terminated click
-    FirebaseMessaging.instance.getInitialMessage().then((message) {
-      if (message != null) {
-        debugPrint("📲 Notification opened (terminated)");
-        notificationStream.add(message);
-      }
-    });
+    /// TERMINATED TAP
+  }
+
+  /// 🔇 SAFE LOG (no spam in release)
+  static void _log(String msg) {
+    if (kDebugMode) {
+      debugPrint("[FCM] $msg");
+    }
   }
 }

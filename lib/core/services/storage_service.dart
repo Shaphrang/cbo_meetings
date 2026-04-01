@@ -1,6 +1,7 @@
 //lib\core\services\storage_service.dart
 import 'dart:io';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter/foundation.dart';
 
 class StorageService {
 
@@ -32,7 +33,7 @@ try {
 
 } catch (e) {
 
-  print("Image upload failed: $e");
+  debugPrint("Image upload failed: $e");
   rethrow;
 }
 }

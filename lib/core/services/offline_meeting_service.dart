@@ -1,6 +1,6 @@
 //lib\core\services\offline_meeting_service.dart
-
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:flutter/foundation.dart';
 
 class OfflineMeetingService {
 
@@ -16,7 +16,7 @@ class OfflineMeetingService {
       "uploaded": false,
     });
 
-    print("💾 Saved latest offline meeting");
+    debugPrint("💾 Saved latest offline meeting");
   }
 
   /// Get pending
@@ -28,6 +28,16 @@ class OfflineMeetingService {
     }
 
     return Map<String, dynamic>.from(data);
+  }
+  
+  Future<int> getPendingCount() async {
+    final data = _box.get(key);
+
+    if (data == null) return 0;
+
+    if (data["uploaded"] == true) return 0;
+
+    return 1;
   }
 
   /// Mark uploaded
@@ -41,7 +51,7 @@ class OfflineMeetingService {
 
     await _box.put(key, map);
 
-    print("✅ Marked meeting as uploaded");
+    debugPrint("✅ Marked meeting as uploaded");
   }
 
   /// Clear

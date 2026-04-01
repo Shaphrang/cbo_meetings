@@ -38,8 +38,9 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> capture() async {
-
     final file = await controller!.takePicture();
+
+    if (!mounted) return;
 
     Navigator.pop(context, File(file.path));
   }
