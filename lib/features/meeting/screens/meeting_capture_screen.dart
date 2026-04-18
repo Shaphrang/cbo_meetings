@@ -1,4 +1,6 @@
 //lib\features\meeting\screens\meeting_capture_screen.dart
+import 'dart:async';
+
 import 'package:hive/hive.dart';
 import 'dart:io';
 import 'dart:ui';
@@ -66,6 +68,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
   final FocusNode submitFocus = FocusNode(); // for later use
 
   bool isOnline = true;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   bool savingsCollected = false;
   bool internalLoan = false;
   bool loanRepayment = false;
@@ -85,7 +88,11 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
   void initState() {
     super.initState();
     checkInternet();
-    loadPendingSyncCount(); // ✅ ADD THIS
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((results) {
+      if (!mounted) return;
+      setState(() => isOnline = !results.contains(ConnectivityResult.none));
+    });
+    loadPendingSyncCount();
   }
 
   bool validateRequiredFields() {
@@ -135,6 +142,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
 
   Future<void> checkInternet() async {
     final result = await Connectivity().checkConnectivity();
+    if (!mounted) return;
 
     setState(() {
       isOnline = result != ConnectivityResult.none;
@@ -298,7 +306,6 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
     /// 🔥 SAVE
     await offline.saveOffline(meeting);
 
-    /// 🔥 UPDATE COUNT (IMPORTANT)
     await loadPendingSyncCount();
 
     if (!mounted) return;
@@ -325,7 +332,7 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
     setState(() => loading = true);
 
     final offline = OfflineMeetingService();
-    final sync = SyncService();
+    final sync = SyncService(offlineMeetingService: offline);
 
     final meeting = {
       "meeting_type": widget.meetingType,
@@ -368,25 +375,20 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
           capturedAt?.toIso8601String() ?? DateTime.now().toIso8601String(),
     };
 
+    final localId = await offline.saveOffline(meeting);
+
     try {
-      /// 🔥 TRY ONLINE SUBMISSION
-      await sync.syncSingleMeeting(meeting);
+      await sync.syncSingleMeeting(meeting, localId: localId);
+      await offline.clearSynced();
 
       if (!mounted) return;
-
+      await loadPendingSyncCount();
       await showSuccessDialog(isOnline: true);
-
     } catch (_) {
-      /// 🔥 FALLBACK → SAVE OFFLINE
-      await offline.saveOffline(meeting);
-
-      /// 🔥 UPDATE COUNT (IMPORTANT)
       await loadPendingSyncCount();
 
       if (!mounted) return;
-
       await showSuccessDialog(isOnline: false);
-
     } finally {
       if (mounted) {
         setState(() => loading = false);
@@ -441,7 +443,11 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
 
       if (!mounted) return;
 
-      if (result["total"] == 0) {
+      if (result["busy"] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Sync already in progress")),
+        );
+      } else if (result["total"] == 0) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("No pending data")),
         );
@@ -672,11 +678,13 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
     /// 🔥 AFTER CLOSE
     clearFormFields();
 
-    _scrollController.animateTo(
-      0,
-      duration: const Duration(milliseconds: 400),
-      curve: Curves.easeOut,
-    );
+    if (mounted && _scrollController.hasClients) {
+      _scrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeOut,
+      );
+    }
   }
    
     /// SECTION CARD
@@ -928,6 +936,8 @@ class _MeetingCaptureScreenState extends State<MeetingCaptureScreen> {
   loanFocus.dispose();
   repaymentFocus.dispose();
   submitFocus.dispose();
+  _scrollController.dispose();
+  _connectivitySubscription?.cancel();
   super.dispose();
 }
 

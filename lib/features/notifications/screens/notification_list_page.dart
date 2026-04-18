@@ -35,6 +35,7 @@ class _NotificationListPageState extends State<NotificationListPage> {
       });
     } catch (e) {
       debugPrint("Error: $e");
+      if (!mounted) return;
       setState(() => loading = false);
     }
   }

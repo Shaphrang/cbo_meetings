@@ -13,7 +13,9 @@
     <application
         android:label="CBO Meet"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="false">
 
         <!-- 🔥 FCM DEFAULT CHANNEL (CRITICAL) -->
         <meta-data

@@ -40,6 +40,7 @@ class _NotificationDetailPageState extends State<NotificationDetailPage> {
       });
     } catch (e) {
       debugPrint("Fetch error: $e");
+      if (!mounted) return;
       setState(() => loading = false);
     }
   }
