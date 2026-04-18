@@ -35,9 +35,9 @@ class _SplashScreenState extends State<SplashScreen> {
 
     try {
       final box = Hive.box('session_box');
-      final session = box.get('meeting_session');
+      final rawSession = box.get('meeting_session');
+      final session = rawSession is Map ? Map<String, dynamic>.from(rawSession) : null;
 
-      debugPrint("📦 Session: $session");
 
       await Future.delayed(const Duration(milliseconds: 600));
 

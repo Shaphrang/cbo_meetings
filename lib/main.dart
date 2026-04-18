@@ -1,49 +1,78 @@
-// lib/main.dart
 import 'dart:async';
-import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/services/fcm_service.dart';
 import 'features/meeting/screens/splash_screen.dart';
 import 'features/notifications/screens/notification_detail_page.dart';
 
-/// 🔔 BACKGROUND HANDLER
 Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
 }
 
-/// 🔑 NAVIGATOR
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
-
-/// 🔄 NOTIFICATION STREAM
 final StreamController<RemoteMessage> notificationStream =
     StreamController<RemoteMessage>.broadcast();
 
-void main() async {
+const String _supabaseUrl = String.fromEnvironment('SUPABASE_URL');
+const String _supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  /// 🔥 FIREBASE
-  await Firebase.initializeApp();
+  await runZonedGuarded(() async {
+    await Firebase.initializeApp();
+    FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
 
-  /// 🔥 BACKGROUND HANDLER
-  FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+    await Hive.initFlutter();
+    await Hive.openBox('offline_meetings');
+    await Hive.openBox('session_box');
 
-  /// 🔥 HIVE
-  await Hive.initFlutter();
-  await Hive.openBox('offline_meetings');
-  await Hive.openBox('session_box');
+    if (_supabaseUrl.isEmpty || _supabaseAnonKey.isEmpty) {
+      throw StateError(
+        'Missing Supabase config. Pass SUPABASE_URL and SUPABASE_ANON_KEY with --dart-define.',
+      );
+    }
 
-  /// 🔥 SUPABASE
-  await Supabase.initialize(
-    url: 'https://bygfityympgtscogjjgd.supabase.co',
-    anonKey:
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ5Z2ZpdHl5bXBndHNjb2dqamdkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI1MjgxODksImV4cCI6MjA4ODEwNDE4OX0.9wSX4Dbs2Jcni3OQvW2yMQJke-Bl0LyJvn3ERKspBBk',
-  );
+    await Supabase.initialize(
+      url: _supabaseUrl,
+      anonKey: _supabaseAnonKey,
+    );
 
-  runApp(const MyApp());
+    runApp(const MyApp());
+  }, (error, stackTrace) {
+    if (kDebugMode) {
+      debugPrint('Unhandled startup error: $error\n$stackTrace');
+    }
+    runApp(const _StartupErrorApp());
+  });
+}
+
+class _StartupErrorApp extends StatelessWidget {
+  const _StartupErrorApp();
+
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              'Unable to initialize the app. Please contact support.',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class MyApp extends StatefulWidget {
@@ -61,10 +90,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     super.initState();
 
     WidgetsBinding.instance.addObserver(this);
-
     FCMService.init();
 
-    /// 🔥 HANDLE TERMINATED STATE DIRECTLY
     FirebaseMessaging.instance.getInitialMessage().then((message) {
       if (message != null) {
         Future.delayed(const Duration(milliseconds: 800), () {
@@ -73,13 +100,11 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       }
     });
 
-    /// 🔥 STREAM LISTENER
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _sub = notificationStream.stream.listen(_handleNavigation);
     });
   }
 
-  /// 🔁 RETRY ON RESUME
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
@@ -94,23 +119,17 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  /// 🚀 HANDLE NAVIGATION
   void _handleNavigation(RemoteMessage message) {
     final data = message.data;
-
-    final String? screen = data['screen'];
-    final String? id = data['id'];
+    final screen = data['screen']?.toString();
+    final id = data['id']?.toString();
 
     if (screen == 'notification_detail' && id != null) {
-      /// 🔥 DELAY NAVIGATION UNTIL UI READY
       Future.delayed(const Duration(milliseconds: 500), () {
         final nav = navigatorKey.currentState;
         if (nav == null) return;
-
         nav.push(
-          MaterialPageRoute(
-            builder: (_) => NotificationDetailPage(id: id),
-          ),
+          MaterialPageRoute(builder: (_) => NotificationDetailPage(id: id)),
         );
       });
     }

@@ -129,6 +129,13 @@ class _MeetingFormScreenState extends State<MeetingFormScreen> {
       return;
     }
 
+    if (meetingType == "VO" && selectedVillage == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Please select village")),
+      );
+      return;
+    }
+
     if (meetingType == "VO" && selectedVO == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Please select VO")),

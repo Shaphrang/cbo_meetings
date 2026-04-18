@@ -1,123 +1,129 @@
-//lib\core\services\sync_service.dart
+import 'dart:async';
 import 'dart:io';
-import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'package:flutter/foundation.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'offline_meeting_service.dart';
 import 'storage_service.dart';
 
 class SyncService {
+  SyncService({OfflineMeetingService? offlineMeetingService})
+      : offline = offlineMeetingService ?? OfflineMeetingService();
 
   final supabase = Supabase.instance.client;
   final storage = StorageService();
-  final offline = OfflineMeetingService();
+  final OfflineMeetingService offline;
 
-  /// ------------------------------------------------------------
-  /// Upload ONE meeting (instant submit)
-  /// ------------------------------------------------------------
-  Future<void> syncSingleMeeting(Map<String, dynamic> meeting) async {
+  static bool _syncInProgress = false;
 
+  Future<Map<String, dynamic>> _preparePayload(Map<String, dynamic> meeting) async {
     final data = Map<String, dynamic>.from(meeting);
 
+    final photoPath = data['photo_path']?.toString();
+    if (photoPath != null && photoPath.isNotEmpty) {
+      final file = File(photoPath);
+      if (await file.exists()) {
+        final imageUrl = await storage.uploadImage(file).timeout(const Duration(seconds: 25));
+        data['photo_url'] = imageUrl;
+      }
+    }
+
+    data.remove('photo_path');
+    data.remove('uploaded');
+    data.remove('local_id');
+    data.remove('status');
+    data.remove('sync_attempts');
+    data.remove('last_error');
+    data.remove('updated_at');
+    data.remove('fingerprint');
+    data.remove('remote_id');
+    data.removeWhere((_, value) => value == null);
+
+    if (data['district_id'] == null || data['block_id'] == null) {
+      throw Exception('Missing district_id or block_id');
+    }
+
+    return data;
+  }
+
+  /// Upload one meeting payload. If localId is passed, queue state is updated.
+  Future<void> syncSingleMeeting(
+    Map<String, dynamic> meeting, {
+    String? localId,
+  }) async {
     try {
-      /// 📸 Upload image if exists
-      if (data["photo_path"] != null) {
-        final file = File(data["photo_path"]);
-
-        if (await file.exists()) {
-          debugPrint("📸 Uploading image...");
-
-          final imageUrl = await storage.uploadImage(file);
-          data["photo_url"] = imageUrl;
-        }
+      if (localId != null) {
+        await offline.markSyncing(localId);
       }
 
-      data.remove("photo_path");
-      data.remove("uploaded"); // ✅ add here too
-      data.removeWhere((key, value) => value == null);
-
-      // ADD THIS BEFORE INSERT
-
-      if (data["district_id"] == null || data["block_id"] == null) {
-        throw Exception("Missing district_id or block_id");
-      }
-
-      /// 📡 Insert to Supabase
+      final payload = await _preparePayload(meeting);
       final response = await supabase
           .from('meetings')
-          .insert(data)
-          .select();
+          .insert(payload)
+          .select('id')
+          .timeout(const Duration(seconds: 25));
 
-      debugPrint("✅ Single meeting uploaded: $response");
+      final inserted = List<Map<String, dynamic>>.from(response);
+      final remoteId = inserted.isNotEmpty ? inserted.first['id']?.toString() : null;
 
+      if (localId != null) {
+        await offline.markUploaded(localId, remoteId: remoteId);
+      }
+
+      debugPrint('✅ Meeting uploaded local_id=$localId remote_id=$remoteId');
     } catch (e) {
-      debugPrint("❌ Upload failed → saving offline: $e");
-
-      await offline.saveOffline(meeting);
+      if (localId != null) {
+        await offline.markFailed(localId, e);
+      }
       rethrow;
     }
   }
 
-  /// ------------------------------------------------------------
-  /// Sync ALL pending meetings
-  /// ------------------------------------------------------------
+  /// Sync all pending meetings with guard against concurrent loops.
   Future<Map<String, dynamic>> syncMeetings() async {
-
-    final meeting = await offline.getPendingMeeting();
-
-    if (meeting == null) {
-      debugPrint("📦 No pending meeting");
-
-      return {
-        "total": 0,
-        "uploaded": 0,
-        "failed": 0,
-      };
+    if (_syncInProgress) {
+      return {'total': 0, 'uploaded': 0, 'failed': 0, 'busy': true};
     }
 
+    _syncInProgress = true;
     try {
-      debugPrint("⬆️ Uploading meeting...");
+      final pending = await offline.getPendingMeetings();
+      if (pending.isEmpty) {
+        return {'total': 0, 'uploaded': 0, 'failed': 0, 'busy': false};
+      }
 
-      final data = Map<String, dynamic>.from(meeting);
+      var uploaded = 0;
+      var failed = 0;
 
-      /// 📸 Upload image
-      if (data["photo_path"] != null) {
+      for (final item in pending) {
+        final localId = item['local_id']?.toString();
+        if (localId == null) {
+          failed++;
+          continue;
+        }
 
-        final file = File(data["photo_path"]);
-
-        if (await file.exists()) {
-          final imageUrl = await storage.uploadImage(file);
-          data["photo_url"] = imageUrl;
+        try {
+          await syncSingleMeeting(item, localId: localId);
+          uploaded++;
+        } catch (e) {
+          failed++;
+          debugPrint('❌ Sync failed for $localId: $e');
         }
       }
 
-      data.remove("photo_path");
-      data.remove("uploaded"); // ✅ VERY IMPORTANT FIX
-      data.removeWhere((key, value) => value == null);
-      
-      final response = await supabase
-          .from('meetings')
-          .insert(data)
-          .select();
-
-      debugPrint("✅ Upload success: $response");
-
-      await offline.markUploaded();
+      if (uploaded > 0) {
+        await offline.clearSynced();
+      }
 
       return {
-        "total": 1,
-        "uploaded": 1,
-        "failed": 0,
+        'total': pending.length,
+        'uploaded': uploaded,
+        'failed': failed,
+        'busy': false,
       };
-
-    } catch (e) {
-
-      debugPrint("❌ Upload failed: $e");
-
-      return {
-        "total": 1,
-        "uploaded": 0,
-        "failed": 1,
-      };
+    } finally {
+      _syncInProgress = false;
     }
   }
 }
